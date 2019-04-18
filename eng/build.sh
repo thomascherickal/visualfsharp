@@ -179,9 +179,11 @@ function BuildSolution {
 
   InitializeToolset
   local toolset_build_proj=$_InitializeToolset
-  
+
+  local buildtools_bl=""
   local bl=""
   if [[ "$binary_log" = true ]]; then
+    buildtools_bl="/bl:\"$log_dir/BuildTools.binlog\""
     bl="/bl:\"$log_dir/Build.binlog\""
   fi
   
@@ -208,6 +210,7 @@ function BuildSolution {
   # build bootstrap tools
   bootstrap_config=Proto
   MSBuild "$repo_root/src/buildtools/buildtools.proj" \
+    $buildtools_bl \
     /restore \
     /p:Configuration=$bootstrap_config \
     /t:Build
