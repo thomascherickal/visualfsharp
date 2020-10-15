@@ -20,7 +20,7 @@
           BeforeTargets="CoreCompile">
 
     <PropertyGroup>
-        <FsLexPath Condition="'$(FsLexPath)' == ''">$(ArtifactsDir)\Bootstrap\fslex.dll</FsLexPath>
+        <FsLexPath Condition="'$(FsLexPath)' == ''">$(ArtifactsDir)\Bootstrap\fslex\fslex.dll</FsLexPath>
     </PropertyGroup>
 
     <!-- Create the output directory -->
@@ -31,6 +31,7 @@
 
     <!-- Make sure it will get cleaned -->
     <CreateItem Include="$(FsLexOutputFolder)%(FsLex.Filename).fs">
+      <Output TaskParameter="Include" ItemName="FsGeneratedSource"/>
       <Output TaskParameter="Include" ItemName="FileWrites"/>
     </CreateItem>
   </Target>
@@ -43,7 +44,7 @@
           BeforeTargets="CoreCompile">
 
     <PropertyGroup>
-        <FsYaccPath Condition="'$(FsYaccPath)' == ''">$(ArtifactsDir)\Bootstrap\fsyacc.dll</FsYaccPath>
+        <FsYaccPath Condition="'$(FsYaccPath)' == ''">$(ArtifactsDir)\Bootstrap\fsyacc\fsyacc.dll</FsYaccPath>
     </PropertyGroup>
 
     <!-- Create the output directory -->
@@ -54,6 +55,7 @@
 
     <!-- Make sure it will get cleaned -->
     <CreateItem Include="$(FsYaccOutputFolder)%(FsYacc.Filename).fs">
+      <Output TaskParameter="Include" ItemName="FsGeneratedSource"/>
       <Output TaskParameter="Include" ItemName="FileWrites"/>
     </CreateItem>
   </Target>

@@ -6,21 +6,19 @@ open System
 open System.Text
 
 open Internal.Utilities
-open Internal.Utilities.Collections
-open Internal.Utilities.Text
 open Internal.Utilities.Text.Lexing
 
 open FSharp.Compiler
-open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.AbstractIL.Internal
 open FSharp.Compiler.AbstractIL.Internal.Library
-open FSharp.Compiler.Lib
-open FSharp.Compiler.Ast
-open FSharp.Compiler.PrettyNaming
 open FSharp.Compiler.ErrorLogger
-open FSharp.Compiler.AbstractIL.Diagnostics
-open FSharp.Compiler.Range
+open FSharp.Compiler.Lib
+open FSharp.Compiler.ParseHelpers
 open FSharp.Compiler.Parser
+open FSharp.Compiler.PrettyNaming
+open FSharp.Compiler.Range
+open FSharp.Compiler.SyntaxTree
+open FSharp.Compiler.XmlDoc
 
 /// The "mock" filename used by fsi.exe when reading from stdin.
 /// Has special treatment by the lexer, i.e. __SOURCE_DIRECTORY__ becomes GetCurrentDirectory()
@@ -40,8 +38,8 @@ type LightSyntaxStatus(initial:bool,warn:bool) =
 
 /// Manage lexer resources (string interning)
 [<Sealed>]
-type LexResourceManager() =
-    let strings = new System.Collections.Generic.Dictionary<string, Parser.token>(1024)
+type LexResourceManager(?capacity: int) =
+    let strings = new System.Collections.Generic.Dictionary<string, Parser.token>(defaultArg capacity 1024)
     member x.InternIdentifierToken(s) = 
         match strings.TryGetValue s with
         | true, res -> res
@@ -51,29 +49,36 @@ type LexResourceManager() =
             res
 
 /// Lexer parameters 
-type lexargs =  
-    { defines: string list
-      ifdefStack: LexerIfdefStack
+type LexArgs =  
+    {
+      defines: string list
       resourceManager: LexResourceManager
-      lightSyntaxStatus : LightSyntaxStatus
       errorLogger: ErrorLogger
       applyLineDirectives: bool
-      pathMap: PathMap }
+      pathMap: PathMap
+      mutable ifdefStack: LexerIfdefStack
+      mutable lightStatus : LightSyntaxStatus
+      mutable stringNest: LexerInterpolatedStringNesting
+    }
 
-/// possible results of lexing a long unicode escape sequence in a string literal, e.g. "\UDEADBEEF"
+/// possible results of lexing a long Unicode escape sequence in a string literal, e.g. "\U0001F47D",
+/// "\U000000E7", or "\UDEADBEEF" returning SurrogatePair, SingleChar, or Invalid, respectively
 type LongUnicodeLexResult =
     | SurrogatePair of uint16 * uint16
     | SingleChar of uint16
     | Invalid
 
-let mkLexargs (_filename, defines, lightSyntaxStatus, resourceManager, ifdefStack, errorLogger, pathMap:PathMap) =
-    { defines = defines
+let mkLexargs (defines, lightStatus, resourceManager, ifdefStack, errorLogger, pathMap:PathMap) =
+    { 
+      defines = defines
       ifdefStack= ifdefStack
-      lightSyntaxStatus=lightSyntaxStatus
+      lightStatus=lightStatus
       resourceManager=resourceManager
       errorLogger=errorLogger
       applyLineDirectives=true
-      pathMap=pathMap }
+      stringNest = []
+      pathMap=pathMap
+    }
 
 /// Register the lexbuf and call the given function
 let reusingLexbufForParsing lexbuf f = 
@@ -96,20 +101,8 @@ let usingLexbufForParsing (lexbuf:UnicodeLexing.Lexbuf, filename) f =
 // Functions to manipulate lexer transient state
 //-----------------------------------------------------------------------
 
-let defaultStringFinisher = (fun _endm _b s -> STRING (Encoding.Unicode.GetString(s, 0, s.Length))) 
-
-let callStringFinisher fin (buf: ByteBuffer) endm b = fin endm b (buf.Close())
-
-let addUnicodeString (buf: ByteBuffer) (x:string) = buf.EmitBytes (Encoding.Unicode.GetBytes x)
-
-let addIntChar (buf: ByteBuffer) c = 
-    buf.EmitIntAsByte (c % 256)
-    buf.EmitIntAsByte (c / 256)
-
-let addUnicodeChar buf c = addIntChar buf (int c)
-let addByteChar buf (c:char) = addIntChar buf (int32 c % 256)
-
-let stringBufferAsString (buf: byte[]) =
+let stringBufferAsString (buf: ByteBuffer) =
+    let buf = buf.Close()
     if buf.Length % 2 <> 0 then failwith "Expected even number of bytes"
     let chars : char[] = Array.zeroCreate (buf.Length/2)
     for i = 0 to (buf.Length/2) - 1 do
@@ -128,6 +121,44 @@ let stringBufferAsBytes (buf: ByteBuffer) =
     let bytes = buf.Close()
     Array.init (bytes.Length / 2) (fun i -> bytes.[i*2]) 
 
+type LexerStringFinisher =
+    | LexerStringFinisher of (ByteBuffer -> LexerStringKind -> bool -> LexerContinuation -> token)
+
+    member fin.Finish (buf: ByteBuffer) kind isPart cont =
+        let (LexerStringFinisher f)  = fin
+        f buf kind isPart cont
+
+    static member Default =
+        LexerStringFinisher (fun buf kind isPart cont ->
+            if kind.IsInterpolated then 
+                let s = stringBufferAsString buf
+                if kind.IsInterpolatedFirst then 
+                    if isPart then 
+                        INTERP_STRING_BEGIN_PART (s, cont)
+                    else
+                        INTERP_STRING_BEGIN_END (s, cont)
+                else
+                    if isPart then
+                        INTERP_STRING_PART (s, cont)
+                    else
+                        INTERP_STRING_END (s, cont)
+            elif kind.IsByteString then 
+                BYTEARRAY (stringBufferAsBytes buf, cont)
+            else
+                STRING (stringBufferAsString buf, cont)
+        ) 
+
+let addUnicodeString (buf: ByteBuffer) (x:string) =
+    buf.EmitBytes (Encoding.Unicode.GetBytes x)
+
+let addIntChar (buf: ByteBuffer) c = 
+    buf.EmitIntAsByte (c % 256)
+    buf.EmitIntAsByte (c / 256)
+
+let addUnicodeChar buf c = addIntChar buf (int c)
+
+let addByteChar buf (c:char) = addIntChar buf (int32 c % 256)
+
 /// Sanity check that high bytes are zeros. Further check each low byte <= 127 
 let stringBufferIsBytes (buf: ByteBuffer) = 
     let bytes = buf.Close()
@@ -138,6 +169,9 @@ let stringBufferIsBytes (buf: ByteBuffer) =
 
 let newline (lexbuf:LexBuffer<_>) = 
     lexbuf.EndPos <- lexbuf.EndPos.NextLine
+
+let advanceColumnBy (lexbuf:LexBuffer<_>) n = 
+    lexbuf.EndPos <- lexbuf.EndPos.ShiftColumnBy(n)
 
 let trigraph c1 c2 c3 =
     let digit (c:char) = int c - int '0' 
@@ -169,7 +203,9 @@ let unicodeGraphLong (s:string) =
     if high = 0 then SingleChar(uint16 low)
     // invalid encoding
     elif high > 0x10 then Invalid
-    // valid surrogate pair - see http://www.unicode.org/unicode/uni2book/ch03.pdf, section 3.7 *)
+    // valid supplementary character: code points U+10000 to U+10FFFF
+    // valid surrogate pair: see http://www.unicode.org/versions/latest/ch03.pdf , "Surrogates" section
+    // high-surrogate code point (U+D800 to U+DBFF) followed by low-surrogate code point (U+DC00 to U+DFFF)
     else
       let codepoint = high * 0x10000 + low
       let hiSurr = uint16 (0xD800 + ((codepoint - 0x10000) / 0x400))
@@ -348,7 +384,7 @@ module Keywords =
             | _ -> 
                 IdentifierToken args lexbuf s
 
-    let inline private DoesIdentifierNeedQuotation (s : string) : bool =
+    let DoesIdentifierNeedQuotation (s : string) : bool =
         not (String.forall IsIdentifierPartCharacter s)              // if it has funky chars
         || s.Length > 0 && (not(IsIdentifierFirstCharacter s.[0]))  // or if it starts with a non-(letter-or-underscore)
         || keywordTable.ContainsKey s                               // or if it's a language keyword like "type"
@@ -374,6 +410,7 @@ module Keywords =
           "base",      FSComp.SR.keywordDescriptionBase()
           "begin",     FSComp.SR.keywordDescriptionBegin()
           "class",     FSComp.SR.keywordDescriptionClass()
+          "const",     FSComp.SR.keywordDescriptionConst()
           "default",   FSComp.SR.keywordDescriptionDefault()
           "delegate",  FSComp.SR.keywordDescriptionDelegate()
           "do",        FSComp.SR.keywordDescriptionDo()
@@ -444,3 +481,4 @@ module Keywords =
           "@>",        FSComp.SR.keywordDescriptionTypedQuotation()
           "<@@",       FSComp.SR.keywordDescriptionUntypedQuotation()
           "@@>",       FSComp.SR.keywordDescriptionUntypedQuotation() ]
+

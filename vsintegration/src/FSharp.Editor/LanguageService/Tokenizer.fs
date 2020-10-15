@@ -14,11 +14,16 @@ open Microsoft.CodeAnalysis.Classification
 open Microsoft.CodeAnalysis.Text
 
 open FSharp.Compiler
-open FSharp.Compiler.Ast
 open FSharp.Compiler.SourceCodeServices
+open FSharp.Compiler.SyntaxTree
 
 open Microsoft.VisualStudio.Core.Imaging
 open Microsoft.VisualStudio.Imaging
+
+open Microsoft.CodeAnalysis.ExternalAccess.FSharp
+
+type private FSharpGlyph = FSharp.Compiler.SourceCodeServices.FSharpGlyph
+type private Glyph = Microsoft.CodeAnalysis.ExternalAccess.FSharp.FSharpGlyph
 
 [<RequireQualifiedAccess>]
 type internal LexerSymbolKind = 
@@ -28,7 +33,8 @@ type internal LexerSymbolKind =
     | GenericTypeParameter = 3
     | StaticallyResolvedTypeParameter = 4
     | ActivePattern = 5
-    | Other = 6
+    | String = 6
+    | Other = 7
 
 type internal LexerSymbol =
     { Kind: LexerSymbolKind
@@ -142,11 +148,14 @@ module internal Tokenizer =
         | FSharpGlyph.Variable -> Glyph.Local
         | FSharpGlyph.Error -> Glyph.Error
 
-    let GetImageIdForSymbol(symbol:FSharpSymbol, kind:LexerSymbolKind) =
+    let GetImageIdForSymbol(symbolOpt:FSharpSymbol option, kind:LexerSymbolKind) =
         let imageId =
             match kind with
             | LexerSymbolKind.Operator -> KnownImageIds.Operator
             | _ ->
+                match symbolOpt with
+                | None -> KnownImageIds.Package
+                | Some symbol ->
                 match symbol with
                 | :? FSharpUnionCase as x ->
                     match Some x.Accessibility with
@@ -340,6 +349,7 @@ module internal Tokenizer =
         member token.IsIdentifier = (token.CharClass = FSharpTokenCharKind.Identifier)
         member token.IsOperator = (token.ColorClass = FSharpTokenColorKind.Operator)
         member token.IsPunctuation = (token.ColorClass = FSharpTokenColorKind.Punctuation)
+        member token.IsString = (token.ColorClass = FSharpTokenColorKind.String)
     
     /// This is the information we save for each token in a line for each active document.
     /// It is a memory-critical data structure - do not make larger. This used to be ~100 bytes class, is now 8-byte struct
@@ -370,6 +380,7 @@ module internal Tokenizer =
                 if token.IsOperator then LexerSymbolKind.Operator 
                 elif token.IsIdentifier then LexerSymbolKind.Ident 
                 elif token.IsPunctuation then LexerSymbolKind.Punctuation
+                elif token.IsString then LexerSymbolKind.String
                 else LexerSymbolKind.Other
             Debug.Assert(uint32 token.Tag < 0xFFFFu)
             Debug.Assert(uint32 kind < 0xFFu)
@@ -453,7 +464,7 @@ module internal Tokenizer =
         let lineTokenizer = sourceTokenizer.CreateLineTokenizer(lineContents)
         let tokens = ResizeArray<SavedTokenInfo>()
         let mutable tokenInfoOption = None
-        let previousLexState = ref lexState
+        let mutable previousLexState = lexState
             
         let processToken() =
             let classificationType = compilerTokenToRoslynToken(tokenInfoOption.Value.ColorClass)
@@ -466,9 +477,9 @@ module internal Tokenizer =
             tokens.Add savedToken
 
         let scanAndColorNextToken() =
-            let info, nextLexState = lineTokenizer.ScanToken(!previousLexState)
+            let info, nextLexState = lineTokenizer.ScanToken(previousLexState)
             tokenInfoOption <- info
-            previousLexState := nextLexState
+            previousLexState <- nextLexState
 
             // Apply some hacks to clean up the token stream (we apply more later)
             match info with
@@ -514,7 +525,7 @@ module internal Tokenizer =
             classifiedSpans.Add(new ClassifiedSpan(classificationType, textSpan))
             startPosition <- endPosition
 
-        SourceLineData(textLine.Start, lexState, previousLexState.Value, lineContents.GetHashCode(), classifiedSpans.ToArray(), tokens.ToArray())
+        SourceLineData(textLine.Start, lexState, previousLexState, lineContents.GetHashCode(), classifiedSpans.ToArray(), tokens.ToArray())
 
 
     // We keep incremental data per-document.  When text changes we correlate text line-by-line (by hash codes of lines)
@@ -607,7 +618,8 @@ module internal Tokenizer =
             linePos: LinePosition, 
             lineStr: string, 
             lookupKind: SymbolLookupKind,
-            wholeActivePatterns: bool
+            wholeActivePatterns: bool,
+            allowStringToken: bool
         ) 
         : LexerSymbol option =
         
@@ -699,6 +711,7 @@ module internal Tokenizer =
             | LexerSymbolKind.StaticallyResolvedTypeParameter -> true 
             | _ -> false) 
         |> Option.orElseWith (fun _ -> tokensUnderCursor |> List.tryFind (fun token -> token.Kind = LexerSymbolKind.Operator))
+        |> Option.orElseWith (fun _ -> if allowStringToken then tokensUnderCursor |> List.tryFind (fun token -> token.Kind = LexerSymbolKind.String) else None)
         |> Option.map (fun token ->
             let partialName = QuickParse.GetPartialLongNameEx(lineStr, token.RightColumn)
             let identStr = lineStr.Substring(token.LeftColumn, token.MatchedLength)
@@ -762,13 +775,14 @@ module internal Tokenizer =
             fileName: string, 
             defines: string list, 
             lookupKind: SymbolLookupKind,
-            wholeActivePatterns: bool
+            wholeActivePatterns: bool,
+            allowStringToken: bool
         ) 
         : LexerSymbol option =
         
         try
             let lineData, textLinePos, lineContents = getCachedSourceLineData(documentKey, sourceText, position, fileName, defines)
-            getSymbolFromSavedTokens(fileName, lineData.SavedTokens, textLinePos, lineContents, lookupKind, wholeActivePatterns)
+            getSymbolFromSavedTokens(fileName, lineData.SavedTokens, textLinePos, lineContents, lookupKind, wholeActivePatterns, allowStringToken)
         with 
         | :? System.OperationCanceledException -> reraise()
         |  ex -> 
@@ -780,7 +794,7 @@ module internal Tokenizer =
         let text = sourceText.GetSubText(span).ToString()
         // backticked ident
         if text.EndsWith "``" then
-            match text.[..text.Length - 3].LastIndexOf "``" with
+            match text.LastIndexOf("``", text.Length - 3, text.Length - 2) with
             | -1 | 0 -> span
             | index -> TextSpan(span.Start + index, text.Length - index)
         else 
@@ -793,9 +807,9 @@ module internal Tokenizer =
         
         let isDoubleBacktickIdent (s: string) =
             let doubledDelimiter = 2 * doubleBackTickDelimiter.Length
-            if s.StartsWith(doubleBackTickDelimiter) && s.EndsWith(doubleBackTickDelimiter) && s.Length > doubledDelimiter then
-                let inner = s.Substring(doubleBackTickDelimiter.Length, s.Length - doubledDelimiter)
-                not (inner.Contains(doubleBackTickDelimiter))
+            if s.Length > doubledDelimiter && s.StartsWith(doubleBackTickDelimiter, StringComparison.Ordinal) && s.EndsWith(doubleBackTickDelimiter, StringComparison.Ordinal) then
+                let inner = s.AsSpan(doubleBackTickDelimiter.Length, s.Length - doubledDelimiter)
+                not (inner.Contains(doubleBackTickDelimiter.AsSpan(), StringComparison.Ordinal))
             else false
         
         let isIdentifier (ident: string) =
@@ -809,7 +823,7 @@ module internal Tokenizer =
                         else PrettyNaming.IsIdentifierPartCharacter c) 
         
         let isFixableIdentifier (s: string) = 
-            not (String.IsNullOrEmpty s) && Lexhelp.Keywords.NormalizeIdentifierBackticks s |> isIdentifier
+            not (String.IsNullOrEmpty s) && Keywords.NormalizeIdentifierBackticks s |> isIdentifier
         
         let forbiddenChars = [| '.'; '+'; '$'; '&'; '['; ']'; '/'; '\\'; '*'; '\"' |]
         

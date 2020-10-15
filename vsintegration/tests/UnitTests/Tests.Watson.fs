@@ -6,22 +6,17 @@ namespace Tests.Compiler.Watson
 
 open FSharp.Compiler.AbstractIL.ILBinaryReader
 open FSharp.Compiler.AbstractIL.Internal.Library 
-open FSharp.Compiler.CompileOps
+open FSharp.Compiler.CompilerConfig
 open FSharp.Compiler.Driver
 open NUnit.Framework
-open System
-open System.Text.RegularExpressions 
-open System.Diagnostics
-open System.Collections.Generic
 open System.IO
-open System.Reflection
 
 type Check = 
     static member public FscLevelException<'TException when 'TException :> exn>(simulationCode)  =
         try 
             try
 #if DEBUG
-                FSharp.Compiler.CompileOps.CompilerService.showAssertForUnexpectedException := false
+                FSharp.Compiler.CompilerDiagnostics.CompilerService.showAssertForUnexpectedException := false
 #endif
                 if (File.Exists("watson-test.fs")) then
                     File.Delete("watson-test.fs")
@@ -33,7 +28,7 @@ type Check =
                     |]
 
                 let ctok = AssumeCompilationThreadWithoutEvidence ()
-                let _code = mainCompile (ctok, argv, FSharp.Compiler.MSBuildReferenceResolver.Resolver, false, ReduceMemoryFlag.No, CopyFSharpCoreFlag.No, FSharp.Compiler.ErrorLogger.QuitProcessExiter, ConsoleLoggerProvider(), None, None)
+                let _code = mainCompile (ctok, argv, LegacyMSBuildReferenceResolver.getResolver(), false, ReduceMemoryFlag.No, CopyFSharpCoreFlag.No, FSharp.Compiler.ErrorLogger.QuitProcessExiter, ConsoleLoggerProvider(), None, None)
                 ()
             with 
             | :? 'TException as e -> 
@@ -48,7 +43,7 @@ type Check =
                 Assert.Fail("An InternalError exception occurred.")
         finally               
 #if DEBUG
-            FSharp.Compiler.CompileOps.CompilerService.showAssertForUnexpectedException := true 
+            FSharp.Compiler.CompilerDiagnostics.CompilerService.showAssertForUnexpectedException := true 
 #endif
         File.Delete("watson-test.fs")
 

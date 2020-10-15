@@ -1,4 +1,4 @@
-Microsoft (R) F# Compiler version 10.2.3 for F# 4.5
+Microsoft (R) F# Compiler version 10.6.0.0 for F# 4.7
 Copyright (c) Microsoft Corporation. All Rights Reserved.
 
 
@@ -42,6 +42,9 @@ Copyright (c) Microsoft Corporation. All Rights Reserved.
 		- INPUT FILES -
 --reference:<file>                       Reference an assembly (Short form:
                                          -r)
+--compilertool:<file>                    Reference an assembly or directory
+                                         containing a design time tool (Short
+                                         form: -t)
 
 
 		- RESOURCES -
@@ -98,6 +101,10 @@ Copyright (c) Microsoft Corporation. All Rights Reserved.
 
 
 		- LANGUAGE -
+--langversion:{?|version|latest|preview} Display the allowed values for
+                                         language version, specify language
+                                         version such as 'latest' or
+                                         'preview'
 --checked[+|-]                           Generate overflow checks
 --define:<string>                        Define conditional compilation
                                          symbols (Short form: -d)
@@ -106,6 +113,8 @@ Copyright (c) Microsoft Corporation. All Rights Reserved.
 
 		- MISCELLANEOUS -
 --nologo                                 Suppress compiler copyright message
+--version                                Display compiler version banner and
+                                         exit
 --help                                   Display this usage message (Short
                                          form: -?)
 --@<file>                                Read response file for more options
@@ -133,6 +142,10 @@ Copyright (c) Microsoft Corporation. All Rights Reserved.
                                          Default - mscorlib
 --baseaddress:<address>                  Base address for the library to be
                                          built
+--checksumalgorithm:{SHA1|SHA256}        Specify algorithm for calculating
+                                         source file checksum stored in PDB.
+                                         Supported values are: SHA1 or SHA256
+                                         (default)
 --noframework                            Do not reference the default CLI
                                          assemblies by default
 --standalone                             Statically link the F# library and

@@ -24,25 +24,20 @@ open System.Runtime.InteropServices
 #else
 open System.Diagnostics.SymbolStore
 #endif
+
 open Internal.Utilities
 open FSharp.Compiler.AbstractIL
 open FSharp.Compiler.AbstractIL.Internal
 open FSharp.Compiler.AbstractIL.IL 
 
-#if !FX_NO_LINKEDRESOURCES
 type IStream = System.Runtime.InteropServices.ComTypes.IStream
-#endif
 
 /// Unmanaged resource file linker - for native resources (not managed ones).
 /// The function may be called twice, once with a zero-RVA and
 /// arbitrary buffer, and once with the real buffer.  The size of the
 /// required buffer is returned.
-type PEFileType = X86 | X64
-
-#if !FX_NO_LINKEDRESOURCES
-val linkNativeResources: unlinkedResources:byte[] list ->  rva:int32 -> PEFileType -> tempFilePath:string -> byte[]
+val linkNativeResources: unlinkedResources:byte[] list ->  rva:int32 -> byte[]
 val unlinkResource: int32 -> byte[] -> byte[]
-#endif
 
 #if !FX_NO_PDB_WRITER
 /// PDB reader and associated types
@@ -115,21 +110,3 @@ val pdbSetMethodRange: PdbWriter -> PdbDocumentWriter -> int -> int -> PdbDocume
 val pdbDefineSequencePoints: PdbWriter -> PdbDocumentWriter -> (int * int * int * int * int) array -> unit
 val pdbWriteDebugInfo: PdbWriter -> idd
 #endif
-
-//---------------------------------------------------------------------
-// Strong name signing
-//---------------------------------------------------------------------
-
-type keyContainerName = string
-type keyPair = byte[]
-type pubkey = byte[]
-type pubkeyOptions = byte[] * bool
-
-val signerOpenPublicKeyFile: string -> pubkey 
-val signerOpenKeyPairFile: string -> keyPair 
-val signerSignatureSize: pubkey -> int 
-val signerGetPublicKeyForKeyPair: keyPair -> pubkey 
-val signerGetPublicKeyForKeyContainer: string -> pubkey 
-val signerCloseKeyContainer: keyContainerName -> unit 
-val signerSignFileWithKeyPair: string -> keyPair -> unit 
-val signerSignFileWithKeyContainer: string -> keyContainerName -> unit
